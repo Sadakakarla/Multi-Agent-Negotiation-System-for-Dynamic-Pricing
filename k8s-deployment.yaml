@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: negotiation-worker
+  namespace: negotiation-system
+  labels:
+    app: negotiation-worker
+    version: "1.0"
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: negotiation-worker
+  template:
+    metadata:
+      labels:
+        app: negotiation-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+        - name: worker
+          image: negotiation-system:latest
+          command: ["python", "-m", "environment.distributed_sim"]
+          env:
+            - name: RAY_ADDRESS
+              value: "ray-head:6379"
+            - name: VLLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: negotiation-secrets
+                  key: vllm_url
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: negotiation-secrets
+                  key: langfuse_public_key
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: negotiation-secrets
+                  key: langfuse_secret_key
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: negotiation-worker
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+  namespace: negotiation-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vllm-server
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - "--model"
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - "--tensor-parallel-size"
+            - "1"
+            - "--max-model-len"
+            - "4096"
+            - "--gpu-memory-utilization"
+            - "0.90"
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "24Gi"
+          ports:
+            - containerPort: 8000
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-tesla-a100
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: negotiation-system
+spec:
+  selector:
+    app: vllm-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: negotiation-worker-hpa
+  namespace: negotiation-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: negotiation-worker
+  minReplicas: 4
+  maxReplicas: 32
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75

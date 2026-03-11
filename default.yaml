@@ -1,0 +1,60 @@
+# Default configuration for the Autonomous Negotiation System
+
+negotiation:
+  agreement_threshold: 0.05   # 5% ZOPA for agreement
+  max_rounds: 20
+
+  dqn:
+    obs_dim: 5
+    lr: 1.0e-4
+    gamma: 0.99
+    epsilon_start: 1.0
+    epsilon_end: 0.05
+    epsilon_decay: 0.995
+    batch_size: 128
+    buffer_capacity: 50000
+    target_update_freq: 500
+
+  dialogue:
+    vllm_base_url: "http://vllm-service:8000"
+    model_name: "Qwen/Qwen2.5-7B-Instruct"
+    temperature: 0.7
+    max_tokens: 256
+    top_p: 0.9
+    timeout: 10.0
+    ppo_reward:
+      agreement_bonus: 10.0
+      constraint_penalty: -5.0
+      concession_rate_weight: 0.3
+      rapport_score_weight: 0.2
+
+  guardrails:
+    max_concession_per_round: 0.08
+    min_offer_floor_pct: 0.85
+    cb_failure_threshold: 5
+    cb_cooldown_seconds: 60
+
+simulation:
+  n_workers: 8
+  ray_address: "auto"
+  cache_ttl_seconds: 300
+  total_episodes: 5000
+
+training:
+  ppo:
+    obs_dim: 32
+    n_actions: 7
+    lr: 3.0e-4
+    clip_eps: 0.2
+    vf_coef: 0.5
+    ent_coef: 0.01
+    n_epochs: 4
+    gae_lambda: 0.95
+    gamma: 0.99
+    max_grad_norm: 0.5
+  checkpoint_dir: "checkpoints/"
+  save_every_n_episodes: 500
+
+monitoring:
+  langfuse_host: "https://cloud.langfuse.com"
+  flush_interval_seconds: 30

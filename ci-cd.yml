@@ -1,0 +1,149 @@
+name: Negotiation System CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/negotiation-system
+
+jobs:
+  # ── Unit Tests ────────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ -v \
+            --cov=agents --cov=environment --cov=training \
+            --cov-report=xml --cov-report=term-missing \
+            --timeout=60
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+
+  # ── Regression Gates ──────────────────────────────────────────────────────
+  regression:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run regression suite (500 episodes)
+        run: |
+          python scripts/regression_eval.py \
+            --n-episodes 500 \
+            --agreement-rate-threshold 0.55 \
+            --constraint-sat-threshold 0.90 \
+            --p95-latency-threshold 200
+        env:
+          VLLM_MOCK: "true"  # Use mock LLM for CI speed
+
+      - name: Check regression gates passed
+        run: |
+          if [ -f regression_results.json ]; then
+            python scripts/check_gates.py regression_results.json
+          fi
+
+  # ── Guardrail Validation ──────────────────────────────────────────────────
+  guardrail-tests:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - name: Run guardrail correctness tests
+        run: pytest tests/guardrails/ -v --timeout=30
+
+  # ── Build & Push ──────────────────────────────────────────────────────────
+  build:
+    needs: [test, regression, guardrail-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy to K8s ─────────────────────────────────────────────────────────
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig (AWS EKS)
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl set image deployment/negotiation-worker \
+            worker=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -n negotiation-system
+          kubectl rollout status deployment/negotiation-worker -n negotiation-system --timeout=5m
+
+      - name: Smoke test production
+        run: |
+          kubectl run smoke-test \
+            --image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --restart=Never \
+            --rm --attach \
+            -n negotiation-system \
+            -- python scripts/smoke_test.py
