@@ -1,6 +1,6 @@
 # Autonomous Multi-Agent Negotiation System for Dynamic Pricing
 
-An autonomous hierarchical negotiation system that combines RL-based strategy selection with LLM-driven dialogue generation for dynamic pricing at production scale. A hierarchical multi-agent negotiation system combining DQN-based strategy selection with Qwen-2.5 7B dialogue generation, deployed on Kubernetes with full CI/CD ~
+A hierarchical negotiation system that combines RL-based strategy selection with LLM-driven (Qwen-2.5 7B) dialogue generation for dynamic pricing at production scale.
 
 Traditional pricing negotiation in e-commerce, supply chain, and algorithmic trading often relies on rigid rule-based systems that cannot adapt to counterpart behavior in real time. This project builds a fully autonomous hierarchical multi-agent negotiation system that can conduct dynamic price negotiations end to end without human intervention.
 
